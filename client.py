@@ -161,28 +161,5 @@ def run():
         print()
 
 
-# def main():
-#     server_address = ("127.0.0.1", 8888)
-#     client1 = Client(server_address)
-#     client2 = Client(server_address)
-#     client3 = Client(server_address)
-#
-#     client1.register("Alice", "password")
-#     client2.register("Bob", "password")
-#     client3.register("Mary", "password")
-#
-#     client1.login("Alice", "password")
-#     client2.login("Bob", "password")
-#     client3.login("Mary", "password")
-#
-#     client1.send_message("Alice", "Bob", "Hello, Bob!")
-#     client2.send_message_all_users("Bob", "Hello everyone!")
-#     client1.send_file("Alice", "Bob", "Alice/testfile.txt")
-#
-#     client1.close()
-#     client2.close()
-#     client3.close()
-
-
 if __name__ == '__main__':
     run()
