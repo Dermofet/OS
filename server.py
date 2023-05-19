@@ -37,6 +37,7 @@ class Server:
                     break
 
                 if message_type == '0':  # Регистрация на сервере
+                    # (0, address, username, password)
                     _, username, password = ast.literal_eval(self._recvall(client_socket).decode())
                     print(f'Регистрация пользователя {username}')
                     if username not in self.users:
@@ -48,6 +49,7 @@ class Server:
                     response_type = 0
 
                 elif message_type == '1':  # Вход на сервер
+                    # (1, address, username, password)
                     _, username, password = ast.literal_eval(self._recvall(client_socket).decode())
                     print(f'Вход пользователя {username}')
                     if username in self.users and self.users[username] == password:
@@ -62,6 +64,7 @@ class Server:
                     response_type = 0
 
                 elif message_type == '2':  # Отправка сообщения всем пользователям
+                    # (2, address, username, msg)
                     _, username, msg = ast.literal_eval(self._recvall(client_socket).decode())
                     print(f'Отправка сообщения всем от {username}')
                     if username in self.users:
@@ -78,6 +81,7 @@ class Server:
                     response_type = 0
 
                 elif message_type == '3':  # Отправка сообщения определенному пользователю
+                    # (3, address, username, recipient, msg)
                     _, username, recipient, msg = ast.literal_eval(self._recvall(client_socket).decode())
                     print(f'Отправка сообщения от {username} к {recipient}')
                     if username in self.users and recipient in self.users:
@@ -95,6 +99,7 @@ class Server:
                     response_type = 0
 
                 elif message_type == '4':  # Отправка файла определенному пользователю
+                    # 4, (address, username, recipient), filesize, file
                     _, username, recipient = ast.literal_eval(self._recvall(client_socket).decode())
 
                     file_size_bytes = client_socket.recv(4)
@@ -112,7 +117,7 @@ class Server:
                     if received_bytes == file_size:
                         print(f'Отправка файла от {username} к {recipient}')
                         if username in self.users and recipient in self.users:
-                            if recipient in self.active_users:
+                            if recipient in self.active_users or username in self.active_users:
                                 with self.active_users_lock:
                                     recipient_socket = self.active_users[recipient]["socket"]
                                     message = f"Файл от {username}: размер {received_bytes} байт"
@@ -121,7 +126,7 @@ class Server:
                                                              received_bytes.to_bytes(4, "big") + b'\n' + file_data)
                                     response = f"Файл отправлен пользователю {recipient}"
                             else:
-                                response = f"{recipient} не онлайн"
+                                response = f"Вы или {recipient} не онлайн. Попробуйте войти"
                         else:
                             response = "Пользователь не зарегистрирован"
                     else:

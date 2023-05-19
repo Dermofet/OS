@@ -1,3 +1,4 @@
+import os.path
 import socket
 import threading
 
@@ -108,10 +109,11 @@ class Menu:
 
     @staticmethod
     def input() -> int:
-        # try:
-        choice = int(input("Ваш выбор: "))
-        return choice
-        # except E
+        try:
+            choice = int(input("Ваш выбор: "))
+            return choice
+        except (Exception,):
+            return -1
 
 
 def run():
@@ -125,6 +127,7 @@ def run():
             "Отправить файл"
         )
     while True:
+        print()
         Menu.menu(menu_text)
         choice = Menu.input()
 
@@ -157,8 +160,14 @@ def run():
             username = input("Ваше имя: ")
             recipient = input("Получатель: ")
             filepath = input("Путь к файлу: ")
+
+            if not os.path.exists(filepath):
+                print("Файл не существует")
+                continue
+            if os.path.isdir(filepath):
+                print("Это директория, не файл")
+                continue
             client.send_file(username, recipient, filepath)
-        print()
 
 
 if __name__ == '__main__':
