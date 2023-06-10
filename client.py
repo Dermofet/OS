@@ -1,174 +1,105 @@
 import os.path
 import socket
 import threading
+from typing import Union
+
+MB = 1048576
 
 
 class Client:
-    def __init__(self, server_address: tuple):
+    def __init__(self, server_address: tuple, client_address: tuple = None):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if client_address is not None:
+            self.client_socket.bind(client_address)
         self.client_socket.connect(server_address)
         self.closed = False
         self.receive_thread = threading.Thread(target=self._receive_messages)
         self.receive_thread.start()
-        self.response_event = threading.Event()
+        self.download_dir = None
+
+    @staticmethod
+    def _recvall(request):
+        data = bytearray()
+        while True:
+            part = request.recv(MB)
+            data += part
+            if len(part) < MB:
+                break
+        return data
+
+    def _get_messages(self):
+        messages = self._recvall(self.client_socket)
+        return list(messages.split(b'\x00')[:-1])
+
+    @staticmethod
+    def _server_msg(message):
+        message = message.decode()
+        print(f"\nСервер: {message}")
+
+    @staticmethod
+    def _user_msg(username, message):
+        username = username.decode()
+        message = message.decode()
+        print(f"\n{username}: {message}")
+
+    def _user_file(self, username, filename, filesize, filedata):
+        username = username.decode()
+        filename = filename.decode()
+        filesize = int(filesize.decode())
+        received_bytes = len(filedata)
+
+        print(f"\n{username}: файл {filename}, размер {filesize}")
+
+        if received_bytes != filesize:
+            print("Ошибка при получении файла")
+            print(f"Скачено {received_bytes}, ожидалось {filesize}")
+
+        with open(f'{self.download_dir}/{filename}', "wb") as file:
+            file.write(filedata)
+        print("Файл успешно получен")
 
     def _receive_messages(self):
         while not self.closed:
-            response = self.client_socket.recv(1)
+            responses = self._get_messages()
+            for resp in responses:
+                resp = resp.split(b"\f")
+                message_type = resp[0].decode()
 
-            if not response:
-                break
-
-            response = response.decode()
-
-            if response == '0':
-                while True:
-                    response = self.client_socket.recv(4096).decode()
-                    print(response)
-                    if len(response) < 4096:
-                        break
-            elif response == '1':
-                response = self.client_socket.recv(4096)
-                if not response:
+                if not resp:
                     break
-                response = response.split(b'\n')
-                print(response[0].decode())
 
-                file_size = int.from_bytes(response[1], "big")
-                file_data = b''.join(response[2:])
-                received_bytes = len(file_data)
-                while received_bytes < file_size:
-                    data = self.client_socket.recv(4096)
-                    if not data:
-                        break
-                    file_data += data
-                    received_bytes += len(data)
-                if received_bytes == file_size:
-                    with open("Bob/file.txt", "wb") as file:
-                        file.write(file_data)
-                    print("Файл успешно получен")
-                else:
-                    print(received_bytes)
-                    print("Ошибка при получении файла")
+                if message_type == '0':
+                    self._server_msg(*resp[1:])
+                elif message_type == '1':
+                    self._user_msg(*resp[1:])
+                elif message_type == '2':
+                    self._user_file(*resp[1:])
 
-            self.response_event.set()
-
-    def _sendmsg(self, message):
-        self.response_event.clear()  # Сбрасываем сигнал о получении ответа
-        self.client_socket.sendall(str(message).encode())
-
-    def _wait_for_response(self):
-        self.response_event.wait()  # Ожидаем получение ответа от сервера
+    def _send_message(self, message: str):
+        self.client_socket.sendall((message + '\x00').encode())
 
     def register(self, username, password):
-        self._sendmsg(0)
-        self._sendmsg((0, username, password))
-        self._wait_for_response()
+        self._send_message(f"0\f{username}\f{password}")
 
     def login(self, username, password):
-        self._sendmsg(1)
-        self._sendmsg((0, username, password))
-        self._wait_for_response()
+        self._send_message(f"1\f{username}\f{password}")
 
-    def send_message_all_users(self, username, message):
-        self._sendmsg(2)
-        self._sendmsg((2, username, message))
-        self._wait_for_response()
+    def send_message_all_users(self, message):
+        self._send_message(f"2\f{message}")
 
-    def send_message(self, username, recipient, message):
-        self._sendmsg(3)
-        self._sendmsg((1, username, recipient, message))
-        self._wait_for_response()
+    def send_message_to_user(self, recipient, message):
+        self._send_message(f"3\f{recipient}\f{message}")
 
-    def send_file(self, username, recipient, file_path):
-        self._sendmsg(4)
-        self._sendmsg((1, username, recipient))
+    def send_file(self, recipient, file_path):
         with open(file_path, "rb") as file:
             file_data = file.read()
-        file_size = len(file_data).to_bytes(4, "big")
-        self.client_socket.sendall(file_size)
-        self.client_socket.sendall(file_data)
-        self.response_event.clear()
-        self.response_event.wait()
+        file_name = file_path.split("/")[-1]
+
+        self.client_socket.sendall(f"4\f{recipient}\f{len(file_data)}\f{file_name}\f".encode()
+                                   + file_data + "\x00".encode())
 
     def close(self):
         self.closed = True
         self.client_socket.shutdown(socket.SHUT_RDWR)
         self.receive_thread.join()
         self.client_socket.close()
-
-
-class Menu:
-    @staticmethod
-    def menu(menu_text: str | list[str] | tuple[str]):
-        if isinstance(menu_text, str):
-            print(menu_text)
-        elif isinstance(menu_text, (list, tuple)):
-            for i, string in enumerate(menu_text):
-                print(f'{i}. {string}')
-
-    @staticmethod
-    def input() -> int:
-        try:
-            choice = int(input("Ваш выбор: "))
-            return choice
-        except (Exception,):
-            return -1
-
-
-def run():
-    client = Client(("127.0.0.1", 8888))
-    menu_text = (
-            "Выход",
-            "Регистрация",
-            "Вход",
-            "Отправить сообщение всем пользователям",
-            "Отправить сообщение пользователю",
-            "Отправить файл"
-        )
-    while True:
-        print()
-        Menu.menu(menu_text)
-        choice = Menu.input()
-
-        print()
-        if choice == -1:
-            print("Неверный ввод. Попробуйте еще раз.")
-            continue
-        elif choice == 0:
-            client.close()
-            print("Сессия закрыта")
-            break
-        elif choice == 1:
-            username = input("Ваше имя: ")
-            password = input("Пароль: ")
-            client.register(username, password)
-        elif choice == 2:
-            username = input("Ваше имя: ")
-            password = input("Пароль: ")
-            client.login(username, password)
-        elif choice == 3:
-            username = input("Ваше имя: ")
-            msg = input("Сообщение: ")
-            client.send_message_all_users(username, msg)
-        elif choice == 4:
-            username = input("Ваше имя: ")
-            recipient = input("Получатель: ")
-            msg = input("Сообщение: ")
-            client.send_message(username, recipient, msg)
-        elif choice == 5:
-            username = input("Ваше имя: ")
-            recipient = input("Получатель: ")
-            filepath = input("Путь к файлу: ")
-
-            if not os.path.exists(filepath):
-                print("Файл не существует")
-                continue
-            if os.path.isdir(filepath):
-                print("Это директория, не файл")
-                continue
-            client.send_file(username, recipient, filepath)
-
-
-if __name__ == '__main__':
-    run()

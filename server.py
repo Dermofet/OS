@@ -1,6 +1,9 @@
 import socket
 import threading
 import ast
+import time
+
+MB = 1048576
 
 
 class Server:
@@ -12,137 +15,173 @@ class Server:
 
     @staticmethod
     def _recvall(request):
-        data = b''
+        data = bytearray()
         while True:
-            part = request.recv(4096)
+            part = request.recv(MB)
             data += part
-            if len(part) < 4096:
+            if len(part) < MB:
                 break
         return data
 
+    @staticmethod
+    def _getmsg(sock):
+        messages = Server._recvall(sock)
+        return messages.split(b'\x00')[:-1]
+
+    @staticmethod
+    def _sendmsg(sock, message: str):
+        sock.sendall(f"{message}\x00".encode())
+
+    def register(self, *args):
+        _, _, username, password = args
+        username = username.decode()
+        password = password.decode()
+
+        print(f'Регистрация пользователя {username}')
+
+        if username in self.users:
+            return "Пользователь с таким именем уже зарегистрирован"
+
+        with self.users_lock:
+            self.users[username] = password
+
+        return "Регистрация прошла успешно"
+
+    def login(self, *args):
+        client_socket, client_address, username, password = args
+        username = username.decode()
+        password = password.decode()
+
+        print(f'Вход пользователя {username}')
+
+        if client_address in self.active_users:
+            return "Этот IP адрес уже использует другой пользователь"
+
+        if username in self.active_users:
+            return "Пользователь уже вошел"
+
+        if username not in self.users:
+            return "Пользователь не зарегистрирован"
+
+        if self.users[username] != password:
+            return "Неверный пароль"
+
+        with self.active_users_lock:
+            value = (client_socket, client_address, username)
+            self.active_users[client_address] = value
+            self.active_users[username] = value
+
+        return "Успешный вход"
+
+    def send_msg_to_all_user(self, *args):
+        _, client_address, message = args
+        username = self.active_users[client_address][2]
+        message = message.decode()
+
+        print(f'Отправка сообщения всем от {username}')
+
+        if client_address not in self.active_users:
+            return "Вы не вошли на сервер"
+
+        for user in set(self.active_users.values()):
+            if user[1] == client_address:
+                continue
+            with self.active_users_lock:
+                user[0].sendall(f"1\f{username}\f{message}\x00".encode())
+
+        return "Сообщение отправлено всем пользователям"
+
+    def send_msg_to_user(self, *args):
+        _, client_address, recipient, message = args
+        username = self.active_users[client_address][2]
+        recipient = recipient.decode()
+        message = message.decode()
+
+        print(f'Отправка сообщения от {username} к {recipient}')
+
+        if client_address not in self.active_users:
+            return "Вы не вошли на сервер"
+
+        if recipient not in self.users:
+            return f"{recipient} не зарегистрирован"
+
+        if recipient not in self.active_users:
+            return f"{recipient} не онлайн"
+
+        with self.active_users_lock:
+            recipient_socket = self.active_users[recipient][0]
+            recipient_socket.sendall(f"1\f{username}\f{message}\x00".encode())
+
+        return f"Сообщение отправлено пользователю {recipient}"
+
+    def send_file_to_user(self, *args):
+        _, client_address, recipient, file_size, file_name, file = args
+        username = self.active_users[client_address][2]
+        recipient = recipient.decode()
+        file_size = int(file_size.decode())
+        file_name = file_name.decode().replace("/", "\\").split("\\")[-1]
+        received_bytes = len(file)
+
+        if received_bytes != file_size:
+            print("Ошибка при получении файла")
+            return
+
+        print(f'Отправка файла от {username} к {recipient}, размер {received_bytes} байт')
+
+        if client_address not in self.active_users:
+            return "Вы не вошли на сервер"
+
+        if recipient not in self.users:
+            return f"{recipient} не зарегистрирован"
+
+        if recipient not in self.active_users:
+            return f"{recipient} не онлайн"
+
+        with self.active_users_lock:
+            recipient_socket = self.active_users[recipient][0]
+            recipient_socket.sendall(f"2\f{username}\f{file_name}\f{received_bytes}\f".encode()
+                                     + file + "\x00".encode())
+
+        return f"Файл отправлен пользователю {recipient}"
+
+    def close_conn(self, client_socket, client_address):
+        client_socket.close()
+
+        with self.active_users_lock:
+            user = self.active_users.pop(client_address)
+            self.active_users.pop(user[2])
+            user[0].close()
+
+        print(f"Соединение с пользователем {client_address} закрыто")
+
     def handle_client(self, client_socket, client_address):
+        message_handlers = {
+            '0': self.register,
+            '1': self.login,
+            '2': self.send_msg_to_all_user,
+            '3': self.send_msg_to_user,
+            '4': self.send_file_to_user
+        }
+
         while True:
             try:
-                message_type = client_socket.recv(1).decode()
+                for client_msg in self._getmsg(client_socket):
+                    client_msg = client_msg.split(b'\f')
+                    message_type = client_msg[0].decode()
 
-                if not message_type:
-                    client_socket.close()
-                    with self.active_users_lock:
-                        for username, info in self.active_users.items():
-                            if info["address"] == client_address:
-                                sock = self.active_users.pop(username)["socket"]
-                                sock.close()
-                                break
-                    print(f"Соединение с пользователем {client_address} закрыто")
-                    break
-
-                if message_type == '0':  # Регистрация на сервере
-                    # (0, address, username, password)
-                    _, username, password = ast.literal_eval(self._recvall(client_socket).decode())
-                    print(f'Регистрация пользователя {username}')
-                    if username not in self.users:
-                        with self.users_lock:
-                            self.users[username] = password
-                        response = "Регистрация прошла успешно"
-                    else:
-                        response = "Пользователь с таким именем уже зарегистрирован"
-                    response_type = 0
-
-                elif message_type == '1':  # Вход на сервер
-                    # (1, address, username, password)
-                    _, username, password = ast.literal_eval(self._recvall(client_socket).decode())
-                    print(f'Вход пользователя {username}')
-                    if username in self.users and self.users[username] == password:
-                        with self.active_users_lock:
-                            self.active_users[username] = {
-                                "socket": client_socket,
-                                "address": client_address
-                            }
-                        response = "Вход успешен"
-                    else:
-                        response = "Пользователь не зарегистрирован"
-                    response_type = 0
-
-                elif message_type == '2':  # Отправка сообщения всем пользователям
-                    # (2, address, username, msg)
-                    _, username, msg = ast.literal_eval(self._recvall(client_socket).decode())
-                    print(f'Отправка сообщения всем от {username}')
-                    if username in self.users:
-                        message_ = f"Сообщение от {username}: {msg}"
-                        for user in self.active_users.values():
-                            if user["address"] == client_address:
-                                continue
-                            with self.active_users_lock:
-                                user["socket"].sendall('0'.encode())
-                                user["socket"].sendall(message_.encode())
-                        response = "Сообщение отправлено всем пользователям"
-                    else:
-                        response = "Пользователь не зарегистрирован"
-                    response_type = 0
-
-                elif message_type == '3':  # Отправка сообщения определенному пользователю
-                    # (3, address, username, recipient, msg)
-                    _, username, recipient, msg = ast.literal_eval(self._recvall(client_socket).decode())
-                    print(f'Отправка сообщения от {username} к {recipient}')
-                    if username in self.users and recipient in self.users:
-                        if recipient in self.active_users:
-                            with self.active_users_lock:
-                                recipient_socket = self.active_users[recipient]["socket"]
-                                message_ = f"Сообщение от {username}: {msg}"
-                                recipient_socket.sendall('0'.encode())
-                                recipient_socket.sendall(message_.encode())
-                                response = f"Сообщение отправлено пользователю {recipient}"
-                        else:
-                            response = f"{recipient} не онлайн"
-                    else:
-                        response = "Пользователь не зарегистрирован"
-                    response_type = 0
-
-                elif message_type == '4':  # Отправка файла определенному пользователю
-                    # 4, (address, username, recipient), filesize, file
-                    _, username, recipient = ast.literal_eval(self._recvall(client_socket).decode())
-
-                    file_size_bytes = client_socket.recv(4)
-                    if not file_size_bytes:
+                    if not message_type:
+                        self.close_conn(client_socket, client_address)
                         break
-                    file_size = int.from_bytes(file_size_bytes, "big")
-                    received_bytes = 0
-                    file_data = b""
-                    while received_bytes < file_size:
-                        data = client_socket.recv(4096)
-                        if not data:
-                            break
-                        file_data += data
-                        received_bytes += len(data)
-                    if received_bytes == file_size:
-                        print(f'Отправка файла от {username} к {recipient}')
-                        if username in self.users and recipient in self.users:
-                            if recipient in self.active_users or username in self.active_users:
-                                with self.active_users_lock:
-                                    recipient_socket = self.active_users[recipient]["socket"]
-                                    message = f"Файл от {username}: размер {received_bytes} байт"
-                                    print(f'count_bytes = {received_bytes.to_bytes(4, "big")}')
-                                    recipient_socket.sendall('1'.encode() + message.encode() + b'\n' +
-                                                             received_bytes.to_bytes(4, "big") + b'\n' + file_data)
-                                    response = f"Файл отправлен пользователю {recipient}"
-                            else:
-                                response = f"Вы или {recipient} не онлайн. Попробуйте войти"
-                        else:
-                            response = "Пользователь не зарегистрирован"
+
+                    if handler := message_handlers[message_type]:
+                        response = handler(client_socket, client_address, *client_msg[1:])
                     else:
-                        print("Ошибка при получении файла")
-                    response_type = 0
+                        response = "Некорректный тип сообщения"
 
-                else:
-                    response = "Некорректный тип сообщения"
-                    response_type = 0
-
-                client_socket.sendall(str(response_type).encode())
-                client_socket.sendall(response.encode())
+                    self._sendmsg(client_socket, f"0\f{response}")
 
             except Exception as e:
-                print("Ошибка при обработке сообщения:", str(e))
-                print(client_socket, client_address)
+                print("Ошибка при обработке сообщения:", e)
                 break
 
     def start_server(self, host, port):
